@@ -1,22 +1,16 @@
-import os
-import sys
 from dotenv import load_dotenv
-
-from langchain.agents.middleware import wrap_model_call
-from langchain.agents.middleware import  ModelRequest, ModelResponse
-from langchain.agents import create_agent
 from typing import Callable
+
+from langchain.agents.middleware import wrap_model_call, ModelRequest, ModelResponse, SummarizationMiddleware
+from langchain.agents import create_agent
 from langchain.messages import HumanMessage, SystemMessage, AIMessage
 from langchain_openai import ChatOpenAI
 
+
 load_dotenv()
 
-SUMMARY_THRESHOLD = 6  # Number of messages before summarization triggers
-CHUNK_SIZE = 4        # Number of messages to compress at once
-
-# Direct summarizer LLM (separate from agent, so no recursion)
+SUMMARY_THRESHOLD = 3  # Number of messages before summarization triggers
 summarizer = ChatOpenAI(model="gpt-4o-mini", temperature=0.5)
-
 
 @wrap_model_call
 def summary_middleware(
@@ -28,62 +22,48 @@ def summary_middleware(
     Calls a separate summarizer model to preserve context, then passes compressed messages to agent.
     """
 
-    # Extract messages from request
-    messages = None
-    if hasattr(request, "messages"):
-        messages = list(request.messages) or []
-    elif isinstance(getattr(request, "kwargs", None), dict):
-        messages = list(request.kwargs.get("messages") or [])
-    else:
-        messages = []
-
-    # If under threshold, pass through unchanged
-    if len(messages) <= SUMMARY_THRESHOLD:
+    msgs = list(request.messages) or []
+    if not msgs:
         return handler(request)
-
-    # Compress old messages in chunks
-    msgs = messages[:]
     compressed = []
 
-    while len(msgs) > SUMMARY_THRESHOLD:
-        chunk = msgs[:CHUNK_SIZE]
-        chunk_text = "\n".join(getattr(m, "content", str(m)) for m in chunk)
+    # If we exceed the threshold, summarize all messages before the threshold
+    if len(msgs) > SUMMARY_THRESHOLD:
+        # Keep the last SUMMARY_THRESHOLD messages
+        messages_to_keep = msgs[-SUMMARY_THRESHOLD:]
         
-        # Call summarizer LLM to produce a concise summary
-        try:
-            summary_response = summarizer.invoke([
-                HumanMessage(content=f"Summarize this conversation briefly in 1-2 sentences:\n{chunk_text}")
-            ])
-            summary_text = summary_response.content
-        except Exception as e:
-            print(f"Summarizer error: {e}; falling back to truncation.")
-            summary_text = chunk_text[:300] + "…"
+        # Summarize all messages before those
+        messages_to_summarize = msgs[:-SUMMARY_THRESHOLD]
+        
+        chunk_text = "\n".join(getattr(m, "content", str(m)) for m in messages_to_summarize)
+        
+        summary_response = summarizer.invoke([
+            HumanMessage(content=f"Summarize this conversation briefly in 1-2 sentences:\n{chunk_text}")
+        ])
+        summary_text = summary_response.content
         
         compressed.append(SystemMessage(content=f"[Summary] {summary_text}"))
-        msgs = msgs[CHUNK_SIZE:]
+        msgs = messages_to_keep
 
     # Build new message list: summaries + remaining messages
     new_messages = compressed + msgs
-
-    print(f"🗜️ Compressed {len(messages)} → {len(new_messages)} messages via summarization.")
-    print(f"🗜️ Compressed Messages: {new_messages}")
 
     # Call the actual agent model with compressed messages
     try:
         return handler(request.override(messages=new_messages))
     except Exception as e:
         print(f"Error: {e}; retrying with original messages.")
-        for attempt in range(2):
-            try:
-                return handler(request)
-            except Exception as e2:
-                if attempt == 1:
-                    raise
-                print(f"Retry {attempt + 1}/2")
-
+        
 agent = create_agent(
-    model="gpt-4o",
+    model="gpt-4o-mini",
     middleware=[summary_middleware],
+    # middleware=[
+    #     SummarizationMiddleware(
+    #         model="gpt-4o-mini",
+    #         trigger=("tokens", 30),
+    #         keep=("messages", 3),
+    #     ),
+    # ],
 )
 
 if __name__ == "__main__":
@@ -91,7 +71,7 @@ if __name__ == "__main__":
     turn = 0
 
     print("=" * 60)
-    print("Agent with Summary Middleware - Interactive Test")
+    print("Agent with Summary Middleware")
     print("=" * 60)
     print("Type 'quit' to exit.\n")
 
@@ -110,23 +90,16 @@ if __name__ == "__main__":
         messages.append(HumanMessage(content=user_input))
         
         print(f"\n📊 Message count before agent call: {len(messages)}")
-        if len(messages) > 5:
-            print(f"⚠️  Middleware will summarize (threshold: 5 messages)\n")
 
         try:
             # Invoke agent with accumulated messages
             response = agent.invoke({"messages": messages})
-            
-            # Extract response text
-            if isinstance(response, dict) and "output" in response:
-                agent_response = response["output"]
-            else:
-                agent_response = str(response)
-            
-            # print(f"\n🤖 Agent: {agent_response}\n")
+
+            agent_response = response["messages"][-1].content
             
             # Add agent response to history
             messages.append(AIMessage(content=agent_response))
+            print(f"\n🤖 Agent: {agent_response}\n")
             print(f"📊 Message count after agent call: {len(messages)}\n")
 
         except Exception as e:
