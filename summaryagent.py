@@ -31,7 +31,7 @@ def summary_middleware(
     if len(msgs) > SUMMARY_THRESHOLD:
         # Keep the last SUMMARY_THRESHOLD messages
         messages_to_keep = msgs[-SUMMARY_THRESHOLD:]
-        
+
         # Summarize all messages before those
         messages_to_summarize = msgs[:-SUMMARY_THRESHOLD]
         
@@ -106,3 +106,11 @@ if __name__ == "__main__":
             print(f"❌ Error: {e}\n")
 
     print("\nTest completed.")
+
+
+# Summary Agent
+# - My name is Ali, I play cricket everyday in morning 
+# - I am kinda jolly boy and loves cracking jokes 
+# - I do software development to develop GenAI apps
+# - My headphones are missing since joining 
+# - Sitting under AC during winter can cause fever
